@@ -1,0 +1,6 @@
+@SistemaVentasETL.Api_HostAddress = http://localhost:5077
+
+GET {{SistemaVentasETL.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
