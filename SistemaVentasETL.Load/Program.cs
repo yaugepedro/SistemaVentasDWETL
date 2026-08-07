@@ -1,28 +1,53 @@
-﻿using SistemaVentasETL.Data.Interfaces;
+using Microsoft.EntityFrameworkCore;
+using SistemaVentasETL.Data.Context;
+using SistemaVentasETL.Data.Interfaces;
 using SistemaVentasETL.Data.Repositories.Api;
+using SistemaVentasETL.Data.Repositories.Csv;
 using SistemaVentasETL.Data.Repositories.Db;
 using SistemaVentasETL.Data.Repositories.Files;
-using SistemaVentasETL.Data.Repositories.Csv;
+using SistemaVentasETL.Data.Services.Implementations;
+using SistemaVentasETL.Data.Services.Interfaces;
 using SistemaVentasETL.Load;
+using SistemaVentasETL.Load.Services.Implementations;
+using SistemaVentasETL.Load.Services.Interfaces;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddSingleton<ISalesRepository>(serviceProvider =>
-{
-    var configuration =
-        serviceProvider.GetRequiredService<IConfiguration>();
+var dwConnectionString =
+    builder.Configuration.GetConnectionString(
+        "DW_Sistema_Ventas")
+    ?? throw new InvalidOperationException(
+        "No se encontró la conexión DW_Sistema_Ventas.");
 
-    var connectionString =
-        configuration.GetConnectionString("Sistema_de_Ventas");
-
-    if (string.IsNullOrWhiteSpace(connectionString))
+builder.Services.AddDbContextFactory<WarehouseDbContext>(
+    options =>
     {
-        throw new InvalidOperationException(
-            "No se encontrÃ³ la cadena de conexiÃ³n Sistema_de_Ventas.");
-    }
+        options.UseSqlServer(
+            dwConnectionString,
+            sqlServerOptions =>
+            {
+                sqlServerOptions.CommandTimeout(120);
+            });
+    });
 
-    return new SalesRepository(connectionString);
-});
+builder.Services.AddSingleton<ISalesRepository>(
+    serviceProvider =>
+    {
+        var configuration =
+            serviceProvider.GetRequiredService<IConfiguration>();
+
+        var connectionString =
+            configuration.GetConnectionString(
+                "Sistema_de_Ventas");
+
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new InvalidOperationException(
+                "No se encontró la conexión Sistema_de_Ventas.");
+        }
+
+        return new SalesRepository(connectionString);
+    });
 
 var apiBaseUrl =
     builder.Configuration["ApiSettings:BaseUrl"];
@@ -30,16 +55,20 @@ var apiBaseUrl =
 if (string.IsNullOrWhiteSpace(apiBaseUrl))
 {
     throw new InvalidOperationException(
-        "No se encontrÃ³ la configuraciÃ³n ApiSettings:BaseUrl.");
+        "No se encontró ApiSettings:BaseUrl.");
 }
 
 builder.Services.AddHttpClient<
     IProductApiRepository,
-    ProductApiRepository>(client =>
-    {
-        client.BaseAddress = new Uri(apiBaseUrl);
-        client.Timeout = TimeSpan.FromSeconds(60);
-    });
+    ProductApiRepository>(
+        client =>
+        {
+            client.BaseAddress =
+                new Uri(apiBaseUrl);
+
+            client.Timeout =
+                TimeSpan.FromSeconds(60);
+        });
 
 builder.Services.AddSingleton<ITemporaryFileRepository>(
     serviceProvider =>
@@ -56,12 +85,13 @@ builder.Services.AddSingleton<ITemporaryFileRepository>(
         if (string.IsNullOrWhiteSpace(directory))
         {
             throw new InvalidOperationException(
-                "No se encontrÃ³ TemporaryFiles:Directory.");
+                "No se encontró TemporaryFiles:Directory.");
         }
 
-        var fullPath = Path.Combine(
-            environment.ContentRootPath,
-            directory);
+        var fullPath =
+            Path.Combine(
+                environment.ContentRootPath,
+                directory);
 
         return new JsonTemporaryFileRepository(fullPath);
     });
@@ -81,19 +111,31 @@ builder.Services.AddSingleton<ICustomerCsvRepository>(
         if (string.IsNullOrWhiteSpace(relativePath))
         {
             throw new InvalidOperationException(
-                "No se encontrÃ³ CsvSettings:CustomersPath.");
+                "No se encontró CsvSettings:CustomersPath.");
         }
 
-        var fullPath = Path.Combine(
-            environment.ContentRootPath,
-            relativePath);
+        var fullPath =
+            Path.Combine(
+                environment.ContentRootPath,
+                relativePath);
 
         return new CustomerCsvRepository(fullPath);
     });
+
+builder.Services.AddSingleton<
+    IDimensionLookupService,
+    DimensionLookupService>();
+
+builder.Services.AddSingleton<
+    IJsonSourceService,
+    JsonSourceService>();
+
+builder.Services.AddSingleton<
+    IDimensionLoadService,
+    DimensionLoadService>();
 
 builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();
 
 host.Run();
-

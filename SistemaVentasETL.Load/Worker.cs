@@ -1,5 +1,6 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using SistemaVentasETL.Data.Interfaces;
+using SistemaVentasETL.Load.Services.Interfaces;
 
 namespace SistemaVentasETL.Load;
 
@@ -8,9 +9,10 @@ public sealed class Worker : BackgroundService
     private readonly ILogger<Worker> _logger;
     private readonly ISalesRepository _salesRepository;
     private readonly IProductApiRepository _productApiRepository;
-    private readonly IHostApplicationLifetime _applicationLifetime;
-    private readonly ITemporaryFileRepository _temporaryFileRepository;
     private readonly ICustomerCsvRepository _customerCsvRepository;
+    private readonly ITemporaryFileRepository _temporaryFileRepository;
+    private readonly IDimensionLoadService _dimensionLoadService;
+    private readonly IHostApplicationLifetime _applicationLifetime;
 
     public Worker(
         ILogger<Worker> logger,
@@ -18,6 +20,7 @@ public sealed class Worker : BackgroundService
         IProductApiRepository productApiRepository,
         ICustomerCsvRepository customerCsvRepository,
         ITemporaryFileRepository temporaryFileRepository,
+        IDimensionLoadService dimensionLoadService,
         IHostApplicationLifetime applicationLifetime)
     {
         _logger = logger;
@@ -25,16 +28,21 @@ public sealed class Worker : BackgroundService
         _productApiRepository = productApiRepository;
         _customerCsvRepository = customerCsvRepository;
         _temporaryFileRepository = temporaryFileRepository;
+        _dimensionLoadService = dimensionLoadService;
         _applicationLifetime = applicationLifetime;
     }
 
     protected override async Task ExecuteAsync(
         CancellationToken stoppingToken)
     {
-        var totalStopwatch = Stopwatch.StartNew();
+        var totalStopwatch =
+            Stopwatch.StartNew();
 
         try
         {
+            _logger.LogInformation(
+                "Iniciando el proceso ETL completo.");
+
             _logger.LogInformation(
                 "Iniciando las extracciones en paralelo.");
 
@@ -43,31 +51,51 @@ public sealed class Worker : BackgroundService
                 ExtractProductsFromApiAsync(stoppingToken),
                 ExtractCustomersFromCsvAsync(stoppingToken));
 
+            _logger.LogInformation(
+                "Las extracciones finalizaron correctamente.");
+
+            _logger.LogInformation(
+                "Iniciando la carga de dimensiones en DW_Sistema_Ventas.");
+
+            var loadResult =
+                await _dimensionLoadService
+                    .LoadDimensionsAsync(stoppingToken);
+
+            if (!loadResult.IsSuccess)
+            {
+                throw new InvalidOperationException(
+                    loadResult.Message);
+            }
+
             totalStopwatch.Stop();
 
             _logger.LogInformation(
-                "Todas las extracciones finalizaron correctamente.");
+                "Carga de dimensiones completada correctamente.");
 
             _logger.LogInformation(
-                "Tiempo total: {ElapsedMilliseconds} ms",
+                "Registros cargados en las dimensiones: {RecordCount}",
+                loadResult.Data);
+
+            _logger.LogInformation(
+                "Tiempo total del proceso ETL: {ElapsedMilliseconds} ms",
                 totalStopwatch.ElapsedMilliseconds);
         }
         catch (OperationCanceledException)
             when (stoppingToken.IsCancellationRequested)
         {
             _logger.LogWarning(
-                "El proceso de extracciÃ³n fue cancelado.");
+                "El proceso ETL fue cancelado.");
         }
         catch (Exception exception)
         {
             _logger.LogError(
                 exception,
-                "OcurriÃ³ un error durante el proceso de extracciÃ³n.");
+                "Ocurrió un error durante el proceso ETL.");
         }
         finally
         {
             _logger.LogInformation(
-                "El proceso finalizarÃ¡ en 10 segundos.");
+                "La aplicación se cerrará en 10 segundos.");
 
             await Task.Delay(
                 TimeSpan.FromSeconds(10),
@@ -80,13 +108,15 @@ public sealed class Worker : BackgroundService
     private async Task ExtractSalesAsync(
         CancellationToken cancellationToken)
     {
-        var stopwatch = Stopwatch.StartNew();
+        var stopwatch =
+            Stopwatch.StartNew();
 
         _logger.LogInformation(
-            "Iniciando la extracciÃ³n de ventas con ADO.NET.");
+            "Extrayendo ventas desde Sistema_de_Ventas con ADO.NET.");
 
         var sales =
-            await _salesRepository.GetSalesAsync(cancellationToken);
+            await _salesRepository.GetSalesAsync(
+                cancellationToken);
 
         await _temporaryFileRepository.SaveJsonAsync(
             "ventas-db.json",
@@ -96,24 +126,19 @@ public sealed class Worker : BackgroundService
         stopwatch.Stop();
 
         _logger.LogInformation(
-            "Las ventas fueron guardadas en Temp/ventas-db.json.");
-
-        _logger.LogInformation(
-            "Ventas extraÃ­das: {RecordCount}",
-            sales.Count);
-
-        _logger.LogInformation(
-            "Tiempo de extracciÃ³n de ventas: {ElapsedMilliseconds} ms",
+            "Ventas extraídas: {RecordCount}. Tiempo: {ElapsedMilliseconds} ms.",
+            sales.Count,
             stopwatch.ElapsedMilliseconds);
     }
 
     private async Task ExtractProductsFromApiAsync(
         CancellationToken cancellationToken)
     {
-        var stopwatch = Stopwatch.StartNew();
+        var stopwatch =
+            Stopwatch.StartNew();
 
         _logger.LogInformation(
-            "Iniciando la extracciÃ³n de productos desde la API REST.");
+            "Extrayendo productos desde la API REST.");
 
         var products =
             await _productApiRepository.GetProductsAsync(
@@ -127,24 +152,19 @@ public sealed class Worker : BackgroundService
         stopwatch.Stop();
 
         _logger.LogInformation(
-            "Los productos fueron guardados en Temp/productos-api.json.");
-
-        _logger.LogInformation(
-            "Productos extraÃ­dos desde la API: {RecordCount}",
-            products.Count);
-
-        _logger.LogInformation(
-            "Tiempo de extracciÃ³n desde la API: {ElapsedMilliseconds} ms",
+            "Productos extraídos: {RecordCount}. Tiempo: {ElapsedMilliseconds} ms.",
+            products.Count,
             stopwatch.ElapsedMilliseconds);
     }
 
     private async Task ExtractCustomersFromCsvAsync(
         CancellationToken cancellationToken)
     {
-        var stopwatch = Stopwatch.StartNew();
+        var stopwatch =
+            Stopwatch.StartNew();
 
         _logger.LogInformation(
-            "Iniciando la extracciÃ³n de clientes desde el archivo CSV.");
+            "Extrayendo clientes desde el archivo CSV.");
 
         var customers =
             await _customerCsvRepository.GetCustomersAsync(
@@ -158,15 +178,8 @@ public sealed class Worker : BackgroundService
         stopwatch.Stop();
 
         _logger.LogInformation(
-            "Los clientes fueron guardados en Temp/clientes-csv.json.");
-
-        _logger.LogInformation(
-            "Clientes extraÃ­dos desde CSV: {RecordCount}",
-            customers.Count);
-
-        _logger.LogInformation(
-            "Tiempo de extracciÃ³n desde CSV: {ElapsedMilliseconds} ms",
+            "Clientes extraídos: {RecordCount}. Tiempo: {ElapsedMilliseconds} ms.",
+            customers.Count,
             stopwatch.ElapsedMilliseconds);
     }
 }
-
